@@ -1,0 +1,29 @@
+# Neo4j Python driver — connects to your local Docker or Aura instance
+neo4j==5.28.1
+
+# STIX2 — parses MITRE ATT&CK STIX bundles (Step 1.5.1a)
+stix2==3.0.1
+
+# HTTP requests — downloads STIX bundle from github.com/mitre/cti
+requests==2.32.3
+
+# PDF table extraction — government advisories (Step 1.5.2)
+pdfplumber==0.11.4
+
+# OpenAI API — LLM-based NLP extraction from vendor reports (Step 1.5.3)
+openai==1.78.0
+
+# NLP toolkit — entity/relation extraction (Step 1.5.3)
+spacy==3.8.4
+
+# Pandas — CSV handling for IEEE paper bulk load (Step 1.5.4)
+pandas==2.2.3
+
+# BeautifulSoup — HTML parsing for web-based advisories (Step 1.5.2)
+beautifulsoup4==4.12.3
+
+# lxml — fast HTML/XML parser used by BeautifulSoup
+lxml==5.3.2
+
+# tqdm — progress bars for long ingestion loops
+tqdm==4.67.1

@@ -1,0 +1,31 @@
+# Secrets
+.env
+*.key
+
+# Data (large/sensitive)
+data/
+outputs/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Project-private docs
+CLAUDE.md
+PROJECT_PLAN.md
+Project_Plan.md
+"Project Context"/
+tests/
+
+# Claude Code local settings
+.claude/settings.local.json
+CLAUDE.local.md
