@@ -98,7 +98,7 @@ def stage_extract(output_path):
     ]
     print(f"      ✅ Relationships involving LockBit: {len(lb_relations)}")
 
-    # Collect all connected node IDs
+    # Collect all connected node IDs (techniques, groups, campaigns linked to LockBit)
     connected_ids = set()
     for rel in lb_relations:
         connected_ids.add(rel["source_ref"])
