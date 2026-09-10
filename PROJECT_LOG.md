@@ -5,6 +5,53 @@ Not a plan — see `Project_Plan.md` for that. This is just "what happened, and 
 
 ---
 
+## 2026-09-10 — Added preconditions and effects (the validation groundwork)
+
+**What I did:** Gave every technique a set of *preconditions* (what an attacker
+must already have to run it) and *effects* (what running it gives them), and loaded
+MITRE's own published LockBit plan as an ordered reference chain.
+
+**Why:** This is the piece Part 2's plan validator and Part 3's "precondition
+satisfaction rate" metric are built on. Without it, we can list techniques but can't
+check whether a generated plan's steps are in a *possible* order — e.g. it can't
+catch a plan that exfiltrates data before opening a command-and-control channel, or
+encrypts before gaining admin.
+
+**The hard part / the honest bit:** no CTI source publishes preconditions or effects.
+They have to be authored, and that authored logic is exactly what later judges whether
+the LLM's plans are valid. So the method matters:
+
+- I wrote a small, transparent **state model** (`scripts/attack_state.py`): a handful
+  of attacker states (foothold, credentials, elevated, c2, data staged/exfiltrated,
+  impact) and a plain rule for each ATT&CK tactic saying what it needs and what it
+  produces. It's deterministic rules I can defend line by line, not something an LLM
+  made up.
+- To check the rules aren't nonsense, I replay them over the **MITRE ATT&CK
+  Evaluations ER6 LockBit plan** — a real, published, ordered attack plan. If our
+  rules can reproduce MITRE's own plan with every step's preconditions satisfied by
+  the earlier steps, the rules hold up. They do: the check passes with zero failures.
+  If someone later changes the rules and breaks them, the load stage refuses to run.
+
+**Also from this:**
+- That MITRE plan is now in the graph as 8 ordered `EmulationStep` nodes (linked
+  `NEXT` → `NEXT`), each tied to the techniques it performs. This doubles as the
+  gold-standard reference plan Part 3 needs to compare generated plans against.
+- The plan names 45 techniques; 26 are already in our graph and got linked. The other
+  19 were left out on purpose — adding them is a separate scope decision, not part of
+  this step.
+
+**Result:** All 65 techniques carry preconditions/effects; the ordered MITRE reference
+plan is loaded; provenance is still complete on every node and relationship. Part 2 can
+now be built on top of this.
+
+**Scope note:** Before this I had added the CISA advisory, which `CLAUDE.md` had listed
+as removed scope. I discussed it and we decided to keep it (it's the only source for the
+exfiltration/credential stages) and I updated the rule in `CLAUDE.md` to match. How the
+CISA data is used specifically for *validation* in Part 3 is still open — parked for
+later so we don't accidentally validate an LLM against LLM-derived data.
+
+---
+
 ## 2026-09-10 — Filled in missing platform data, and merged two duplicated techniques
 
 **What I did:** Two fixes to the ingest scripts, found by looking at the graph in the

@@ -29,8 +29,10 @@ attested by both. Further sources will be added incrementally.
 APGen/
 ├── scripts/
 │   ├── attack_tactics.py       shared ATT&CK tactic vocabulary and kill-chain ordering
+│   ├── attack_state.py         authored precondition/effect state model
 │   ├── stix_ingest.py          two-stage MITRE ATT&CK STIX → Neo4j ingester
-│   └── cisa_ingest.py          two-stage CISA advisory AA23-165A → Neo4j ingester
+│   ├── cisa_ingest.py          two-stage CISA advisory AA23-165A → Neo4j ingester
+│   └── state_annotate.py       annotate preconditions/effects + load MITRE Evals spine
 ├── requirements.txt            runtime dependencies
 ├── requirements-dev.txt        test/dev dependencies
 ├── .env.example                template for local secrets (Neo4j, OpenAI)
@@ -92,6 +94,24 @@ python scripts/stix_ingest.py --stage load --input outputs/lockbit_stix.json
 # 4. Load CISA, translating ATT&CK IDs MITRE has since renumbered
 python scripts/cisa_ingest.py --stage load --input outputs/cisa_lockbit.json     --aliases outputs/lockbit_stix.json
 ```
+
+Then annotate the graph with preconditions/effects and load the reference plan:
+
+```powershell
+# 5. Parse MITRE ATT&CK Evaluations ER6 LockBit plan (the ordered reference)
+python scripts/state_annotate.py --stage extract --output outputs/evals_lockbit.json
+
+# 6. Annotate every technique with preconditions/effects and load the reference
+#    spine. Refuses to run if the state rules cannot reproduce the MITRE plan.
+python scripts/state_annotate.py --stage load --input outputs/evals_lockbit.json
+```
+
+Preconditions and effects are an authored model (`scripts/attack_state.py`): a small
+set of attacker states and a per-tactic rule for what each tactic requires and
+produces. No CTI source publishes these, so the model is validated by replaying it
+over MITRE's published, ordered ER6 LockBit plan — every step's preconditions must be
+met by the effects of prior steps. That plan is also loaded as 8 ordered
+`EmulationStep` nodes, serving as the gold-standard reference for Part 3.
 
 Why the cross-references:
 
