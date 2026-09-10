@@ -5,6 +5,59 @@ Not a plan — see `Project_Plan.md` for that. This is just "what happened, and 
 
 ---
 
+## 2026-09-10 — Filled in missing platform data, and merged two duplicated techniques
+
+**What I did:** Two fixes to the ingest scripts, found by looking at the graph in the
+browser after the CISA load.
+
+### Fix 1 — techniques with no operating system attached
+
+**The problem:** filtering a plan by `'Windows' IN t.platforms` silently deleted every
+credential-access, collection and exfiltration step. Not because those steps are
+non-Windows, but because we had *no platform information for them at all*, and an empty
+list matches nothing.
+
+**Why it happened:** platform data comes from MITRE's `x_mitre_platforms` field. CISA's
+advisory doesn't publish platforms, so the 27 techniques that came only from CISA had none.
+The stages I had just added were exactly the ones being dropped.
+
+**The fix:** `stix_ingest.py --stage extract` now takes an optional `--enrich` argument
+pointing at the CISA extract. Any technique CISA names is also pulled from the MITRE
+catalogue, purely for its platform data.
+
+**Important detail:** those techniques do *not* get added to the `sources` list and get no
+`USES` relationship. `sources` records *who says LockBit uses this technique*, and MITRE
+doesn't say that — it only defines what the technique is. Mixing the two would have
+inflated my corroboration count with a number that means nothing.
+
+### Fix 2 — the same technique stored twice under two different IDs
+
+**The problem:** `T1562.001` and `T1685` were sitting in the graph as two separate nodes.
+They are the same technique. All 8 tools were attached to one of them and none to the
+other.
+
+**Why it happened:** CISA's advisory is from June 2023 and was written against ATT&CK v13.
+MITRE has since renumbered that technique (and one other). Advisories are never reissued,
+so the old numbers are frozen in the text forever. A generated plan would have listed the
+same step twice.
+
+**The fix:** the extract stage now follows MITRE's own `revoked-by` records to map old IDs
+to current ones, and the CISA loader applies that map *before* writing anything, so the
+outdated ID never becomes a node in the first place. The original number is kept on the
+node as `superseded_ids` so I can still trace back to what the advisory printed.
+
+**Result:**
+- 0 techniques without platform data (was 27). A Windows filter now keeps every stage.
+- Corroborated techniques went from 12 to 14 — the two duplicates were hiding real
+  agreement between the sources.
+- Had to delete the 2 stale nodes by hand once; everything else was rebuilt from the saved
+  JSON files.
+
+**Lesson worth keeping:** when two sources are written years apart, their technique IDs
+will drift. Any future source needs the same alias treatment.
+
+---
+
 ## 2026-09-10 — Added the CISA advisory as a second source
 
 **What I did:** Wrote `scripts/cisa_ingest.py` to pull CISA advisory AA23-165A

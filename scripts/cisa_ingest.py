@@ -180,13 +180,45 @@ def stage_extract(output_path):
 # ─────────────────────────────────────────────
 # STAGE B — Load JSON → Neo4j (run locally)
 # ─────────────────────────────────────────────
-def stage_load(input_path):
+def load_id_aliases(path):
+    """Revoked-to-current ATT&CK ID map produced by the STIX extract stage."""
+    if not path:
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f).get("id_aliases", {})
+
+
+def apply_id_aliases(techniques, tools, aliases):
+    """
+    Rewrite ATT&CK IDs this advisory names that MITRE has since renumbered.
+
+    Applied before anything is written, so a stale ID never becomes a node and
+    then has to be merged away. The original is kept in superseded_ids so the
+    graph still traces back to what the advisory actually printed.
+    """
+    for t in techniques:
+        current = aliases.get(t["attack_id"])
+        if current:
+            t["superseded_ids"] = [t["attack_id"]]
+            t["attack_id"] = current
+    for tool in tools:
+        tool["technique_id"] = aliases.get(tool["technique_id"], tool["technique_id"])
+    return techniques, tools
+
+
+def stage_load(input_path, aliases_path=None):
     print(f"[1/4] Reading {input_path} ...")
     with open(input_path, encoding="utf-8") as f:
         data = json.load(f)
 
     techniques = data["techniques"]
     tools      = data["tools"]
+
+    aliases = load_id_aliases(aliases_path)
+    if aliases:
+        techniques, tools = apply_id_aliases(techniques, tools, aliases)
+        for old_id, new_id in sorted(aliases.items()):
+            print(f"      ↪️  Revoked ID {old_id} → {new_id}")
     print(f"      Techniques : {len(techniques)}")
     print(f"      Tools      : {len(tools)}")
 
@@ -226,6 +258,8 @@ def stage_load(input_path):
                 SET t.tactic_order = CASE WHEN t.tactic_order IS NULL
                                           OR $tactic_order < t.tactic_order
                                      THEN $tactic_order ELSE t.tactic_order END,
+                    t.superseded_ids = CASE WHEN $superseded = []
+                                            THEN t.superseded_ids ELSE $superseded END,
                     t.sources = CASE WHEN $source IN coalesce(t.sources, [])
                                      THEN t.sources
                                      ELSE coalesce(t.sources, []) + $source END
@@ -241,6 +275,7 @@ def stage_load(input_path):
                 "description":  " ".join(t["procedures"])[:500],
                 "tactics":      t["tactics"],
                 "tactic_order": get_tactic_order(t["tactics"]),
+                "superseded":   t.get("superseded_ids", []),
                 "procedure":    " ".join(t["procedures"])[:300],
                 "actor":        data["actor_name"],
                 **provenance,
@@ -289,9 +324,12 @@ if __name__ == "__main__":
     parser.add_argument("--stage",  choices=["extract", "load"], required=True)
     parser.add_argument("--input",  default="outputs/cisa_lockbit.json")
     parser.add_argument("--output", default="outputs/cisa_lockbit.json")
+    parser.add_argument("--aliases", default=None,
+                        help="STIX extract JSON supplying revoked-to-current ATT&CK "
+                             "ID aliases (e.g. outputs/lockbit_stix.json).")
     args = parser.parse_args()
 
     if args.stage == "extract":
         stage_extract(args.output)
     elif args.stage == "load":
-        stage_load(args.input)
+        stage_load(args.input, args.aliases)

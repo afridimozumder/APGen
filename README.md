@@ -16,9 +16,10 @@ Master's thesis project at Aalborg University (AAU), Denmark.
 
 ## Status
 
-Phase A — Knowledge Graph construction. The first ingestion stage (MITRE ATT&CK STIX
-for LockBit 2.0 / `S1199` and LockBit 3.0 / `S1202`) is complete; further sources will
-be added incrementally.
+Phase A — Knowledge Graph construction. Two sources are ingested: MITRE ATT&CK STIX
+(LockBit 2.0 / `S1199` and LockBit 3.0 / `S1202`) and CISA advisory AA23-165A. Together
+they cover the kill chain from initial access to impact, with 14 techniques independently
+attested by both. Further sources will be added incrementally.
 
 ---
 
@@ -27,7 +28,9 @@ be added incrementally.
 ```
 APGen/
 ├── scripts/
-│   └── stix_ingest.py          two-stage MITRE ATT&CK STIX → Neo4j ingester
+│   ├── attack_tactics.py       shared ATT&CK tactic vocabulary and kill-chain ordering
+│   ├── stix_ingest.py          two-stage MITRE ATT&CK STIX → Neo4j ingester
+│   └── cisa_ingest.py          two-stage CISA advisory AA23-165A → Neo4j ingester
 ├── requirements.txt            runtime dependencies
 ├── requirements-dev.txt        test/dev dependencies
 ├── .env.example                template for local secrets (Neo4j, OpenAI)
@@ -70,23 +73,43 @@ docker run --name apgen-neo4j -p 7474:7474 -p 7687:7687 -d \
 
 Neo4j Browser: <http://localhost:7474> · Bolt: `bolt://localhost:7687`.
 
-### 4. Run the STIX ingestion (Step 1.5.1a)
+### 4. Run the ingestion (Steps 1.5.1a and 1.5.1b)
 
-The ingestion script follows a two-stage pattern: a heavy `extract` stage that can run
-on a compute cluster without Neo4j access, and a light `load` stage that runs locally
-against Neo4j.
+Both ingesters follow a two-stage pattern: a heavy `extract` stage that can run on a
+compute cluster without Neo4j access, and a light `load` stage that runs locally against
+Neo4j. **Order matters** — the two sources exchange information, so run them as below.
 
 ```powershell
-# Stage 1 — fetch ATT&CK STIX bundle and extract LockBit subgraph to JSON
-python scripts/stix_ingest.py --stage extract
+# 1. Extract the CISA advisory first: the STIX extract needs the technique IDs it names
+python scripts/cisa_ingest.py --stage extract --output outputs/cisa_lockbit.json
 
-# Stage 2 — load the JSON into Neo4j (idempotent; uses MERGE)
-python scripts/stix_ingest.py --stage load
+# 2. Extract the ATT&CK bundle, pulling platform data for the techniques CISA named
+python scripts/stix_ingest.py --stage extract --output outputs/lockbit_stix.json     --enrich outputs/cisa_lockbit.json
+
+# 3. Load MITRE (idempotent; uses MERGE throughout)
+python scripts/stix_ingest.py --stage load --input outputs/lockbit_stix.json
+
+# 4. Load CISA, translating ATT&CK IDs MITRE has since renumbered
+python scripts/cisa_ingest.py --stage load --input outputs/cisa_lockbit.json     --aliases outputs/lockbit_stix.json
 ```
 
-Output: a populated graph containing `Malware` nodes for LockBit variants, the
-`Technique` / `SubTechnique` nodes they use, related `ThreatActor` nodes, and
-provenance-tagged `USES` relationships.
+Why the cross-references:
+
+- `--enrich` lets the STIX extract fetch `x_mitre_platforms` for techniques only CISA
+  attributes to LockBit. Without it those techniques have no platform data and are
+  silently dropped by any environment filter. They are pulled for their definition only:
+  they gain no `USES` edge and are not added to `sources`, because MITRE does not
+  attribute them to LockBit.
+- `--aliases` maps ATT&CK IDs that were current when the advisory was published to the
+  IDs MITRE uses today (e.g. `T1562.001` → `T1685`). Without it the same technique enters
+  the graph twice under two IDs and appears twice in a generated plan.
+
+Output: `Malware` nodes for the LockBit variants, a `ThreatActor` node for affiliates,
+`Technique` / `SubTechnique` nodes ordered along the kill chain by `tactic_order` and
+filterable by `platforms`, `Tool` nodes linked by `IMPLEMENTS`, and provenance-tagged
+`USES` relationships. Every node and relationship carries `source`, `source_url` and
+`confidence`; techniques additionally carry a `sources` list recording every source that
+attributes them to LockBit.
 
 ---
 

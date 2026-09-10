@@ -70,6 +70,64 @@ def get_platforms(obj) -> list:
     """OS/platforms a technique applies to, e.g. ['Windows', 'ESXi']."""
     return obj.get("x_mitre_platforms", [])
 
+def select_enrichment_techniques(all_techniques, wanted_ids, already_have):
+    """
+    ATT&CK objects for techniques another source attributed to LockBit.
+
+    CISA advisories name techniques but publish no platform data, so those
+    nodes cannot be filtered by target environment. MITRE documents every
+    technique regardless of who it links it to, so its definitions supply the
+    missing platforms. Revoked and deprecated objects are skipped: an ATT&CK ID
+    can appear on several objects and only the live one should win.
+    """
+    selected = {}
+    for stix_id, obj in all_techniques.items():
+        attack_id = get_attack_id(obj)
+        if attack_id not in wanted_ids or attack_id in already_have:
+            continue
+        if obj.get("revoked") or obj.get("x_mitre_deprecated"):
+            continue
+        selected[stix_id] = obj
+    return selected
+
+
+def resolve_revoked_ids(all_techniques, relationships, wanted_ids):
+    """
+    Map an ATT&CK ID that has since been revoked onto the ID that replaced it.
+
+    Advisories are written against the ATT&CK version current at publication and
+    are never reissued, so CISA AA23-165A (June 2023, ATT&CK v13) still names
+    T1562.001 for a technique MITRE has since renumbered to T1685. Without this
+    map both IDs enter the graph as separate nodes and one real technique
+    appears twice in a generated plan.
+    """
+    by_attack_id = {}
+    for obj in all_techniques.values():
+        by_attack_id.setdefault(get_attack_id(obj), []).append(obj)
+
+    revoked_by = {r["source_ref"]: r["target_ref"] for r in relationships
+                  if r.get("relationship_type") == "revoked-by"}
+
+    aliases = {}
+    for attack_id in wanted_ids:
+        candidates = by_attack_id.get(attack_id, [])
+        if any(not o.get("revoked") and not o.get("x_mitre_deprecated") for o in candidates):
+            continue  # a live object still owns this ID
+        for obj in candidates:
+            replacement = all_techniques.get(revoked_by.get(obj["id"], ""))
+            if replacement and get_attack_id(replacement):
+                aliases[attack_id] = get_attack_id(replacement)
+                break
+    return aliases
+
+
+def read_referenced_attack_ids(path):
+    """ATT&CK IDs named by a companion extract, e.g. the CISA advisory JSON."""
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    return {t["attack_id"] for t in data.get("techniques", [])}
+
+
 def find_software_by_attack_ids(objects, attack_ids):
     """Find malware/tool objects matching a set of ATT&CK IDs (e.g. S1199, S1202)."""
     result = {}
@@ -83,7 +141,7 @@ def find_software_by_attack_ids(objects, attack_ids):
 # ─────────────────────────────────────────────
 # STAGE A — Download + Filter → Save JSON
 # ─────────────────────────────────────────────
-def stage_extract(output_path):
+def stage_extract(output_path, enrich_path=None):
     print("[1/3] Downloading ATT&CK STIX bundle from github.com/mitre/cti ...")
     print("      (~60MB, takes 30-60 seconds)")
     r = requests.get(BUNDLE_URL, timeout=120)
@@ -136,10 +194,28 @@ def stage_extract(output_path):
     print(f"      ✅ Groups linked     : {len(lb_groups)}")
     print(f"      ✅ Campaigns linked  : {len(lb_campaigns)}")
 
+    # Techniques another source ties to LockBit, pulled in for their platform
+    # data only. Kept separate from "techniques" so the load stage never treats
+    # them as a MITRE attribution to LockBit.
+    enrichment, id_aliases = {}, {}
+    if enrich_path:
+        referenced = read_referenced_attack_ids(enrich_path)
+        already_have = {get_attack_id(t) for t in lb_techniques.values()}
+        id_aliases = resolve_revoked_ids(all_techniques, relationships, referenced)
+        # Chase each revoked ID to its replacement before selecting enrichment.
+        referenced = {id_aliases.get(a, a) for a in referenced}
+        enrichment = select_enrichment_techniques(all_techniques, referenced, already_have)
+        print(f"      ✅ Enrichment from {os.path.basename(enrich_path)}: "
+              f"{len(enrichment)} of {len(referenced)} referenced techniques")
+        for old_id, new_id in sorted(id_aliases.items()):
+            print(f"      ↪️  Revoked ID {old_id} → {new_id}")
+
     # Save
     result = {
         "lockbit_software": list(lockbit_software.values()),
         "techniques":       list(lb_techniques.values()),
+        "enrichment_techniques": list(enrichment.values()),
+        "id_aliases":       id_aliases,
         "groups":           list(lb_groups.values()),
         "campaigns":        list(lb_campaigns.values()),
         "relationships":    lb_relations
@@ -161,12 +237,14 @@ def stage_load(input_path):
 
     lockbit_software = data["lockbit_software"]
     techniques       = data["techniques"]
+    enrichment       = data.get("enrichment_techniques", [])
     groups           = data["groups"]
     campaigns        = data["campaigns"]
     relations        = data["relationships"]
 
     print(f"      LockBit variants : {[s['name'] for s in lockbit_software]}")
     print(f"      Techniques       : {len(techniques)}")
+    print(f"      Enrichment only  : {len(enrichment)}")
     print(f"      Groups linked    : {len(groups)}")
     print(f"      Campaigns        : {len(campaigns)}")
     print(f"      Relationships    : {len(relations)}")
@@ -214,6 +292,7 @@ def stage_load(input_path):
                     t.tactics      = $tactics,
                     t.tactic_order = $tactic_order,
                     t.platforms    = $platforms,
+                    t.platforms_source = 'MITRE ATT&CK STIX',
                     t.source       = 'MITRE ATT&CK STIX',
                     t.source_url   = 'https://github.com/mitre/cti',
                     t.confidence   = 1.0,
@@ -230,6 +309,33 @@ def stage_load(input_path):
                 "platforms":    get_platforms(t)
             })
         print(f"      ✅ {len(techniques)} Technique/SubTechnique nodes")
+
+        # Platform data for techniques MITRE documents but does not itself tie to
+        # LockBit. These deliberately do NOT append to t.sources and get no USES
+        # edge: t.sources records who attributes a technique to LockBit, and
+        # MITRE does not. Only the technique's definition comes from here.
+        for t in enrichment:
+            attack_id = get_attack_id(t)
+            label = "SubTechnique" if "." in attack_id else "Technique"
+            session.run(f"""
+                MERGE (t:{label} {{attack_id: $attack_id}})
+                ON CREATE SET t.name        = $name,
+                              t.description = $description,
+                              t.source      = 'MITRE ATT&CK STIX',
+                              t.source_url  = 'https://github.com/mitre/cti',
+                              t.confidence  = 1.0
+                SET t.stix_id          = $stix_id,
+                    t.platforms        = $platforms,
+                    t.platforms_source = 'MITRE ATT&CK STIX'
+            """, {
+                "stix_id":     t["id"],
+                "attack_id":   attack_id,
+                "name":        t.get("name", ""),
+                "description": t.get("description", "")[:500],
+                "platforms":   get_platforms(t)
+            })
+        if enrichment:
+            print(f"      ✅ {len(enrichment)} techniques enriched with platform data")
 
         # ThreatActor nodes (groups linked to LockBit)
         for g in groups:
@@ -321,9 +427,12 @@ if __name__ == "__main__":
     parser.add_argument("--stage",  choices=["extract", "load"], required=True)
     parser.add_argument("--input",  default="lockbit_stix.json")
     parser.add_argument("--output", default="lockbit_stix.json")
+    parser.add_argument("--enrich", default=None,
+                        help="Companion extract JSON (e.g. outputs/cisa_lockbit.json). "
+                             "Techniques it names are pulled in for platform data only.")
     args = parser.parse_args()
 
     if args.stage == "extract":
-        stage_extract(args.output)
+        stage_extract(args.output, args.enrich)
     elif args.stage == "load":
         stage_load(args.input)
