@@ -32,7 +32,8 @@ APGen/
 │   ├── attack_state.py         authored precondition/effect state model
 │   ├── stix_ingest.py          two-stage MITRE ATT&CK STIX → Neo4j ingester
 │   ├── cisa_ingest.py          two-stage CISA advisory AA23-165A → Neo4j ingester
-│   └── state_annotate.py       annotate preconditions/effects + load MITRE Evals spine
+│   ├── state_annotate.py       annotate preconditions/effects + load MITRE Evals spine
+│   └── graphrag_retrieve.py    GraphRAG retrieval — KG subgraph → prompt context
 ├── requirements.txt            runtime dependencies
 ├── requirements-dev.txt        test/dev dependencies
 ├── .env.example                template for local secrets (Neo4j, OpenAI)
@@ -136,6 +137,31 @@ filterable by `platforms`, `Tool` nodes linked by `IMPLEMENTS`, and provenance-t
 `USES` relationships. Every node and relationship carries `source`, `source_url` and
 `confidence`; techniques additionally carry a `sources` list recording every source that
 attributes them to LockBit.
+
+### 5. Retrieve an emulation subgraph (Part 2, Phase B)
+
+With the graph populated, `graphrag_retrieve.py` returns the LockBit-specific slice an LLM
+is allowed to see: techniques grouped into ATT&CK kill-chain phases, each carrying its
+preconditions, effects, tools and sources. It only *reads* Neo4j, so it runs locally and
+needs no `extract`/`load` split.
+
+```powershell
+# Phase summary, plus the JSON the generator will consume
+python scripts/graphrag_retrieve.py --version 3.0 --platform Windows --out outputs/subgraph_3.0_windows.json
+
+# The same subgraph rendered as a prompt-context block
+python scripts/graphrag_retrieve.py --version 3.0 --objective "encrypt files and exfiltrate data" --print-prompt
+```
+
+A technique is included when MITRE attributes it to the requested payload (`S1199` /
+`S1202`) **or** when CISA AA23-165A attributes it to LockBit affiliates. The MITRE leg is
+version-specific; the CISA leg is not, because the advisory describes affiliate tradecraft
+rather than one payload build. Techniques ingested only for their platform data carry no
+`USES` edge and are therefore excluded.
+
+The `EmulationStep` reference chain is deliberately never retrieved: it is MITRE's own
+published plan and serves as Part 3's ground truth, so putting it in the generation context
+would be teaching to the test.
 
 ---
 
