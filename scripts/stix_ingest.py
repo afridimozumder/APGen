@@ -16,10 +16,18 @@ Usage:
 """
 
 import os
+import sys
 import json
 import argparse
 import requests
 from neo4j import GraphDatabase
+
+# Windows consoles default to cp1252, which cannot encode the status glyphs
+# used in this script's output. Streams replaced by a test runner or a pipe
+# may not expose reconfigure(), so only call it where it exists.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -205,7 +213,8 @@ def stage_load(input_path):
                     m.type        = $type,
                     m.aliases     = $aliases,
                     m.source      = 'MITRE ATT&CK STIX',
-                    m.source_url  = 'https://github.com/mitre/cti'
+                    m.source_url  = 'https://github.com/mitre/cti',
+                    m.confidence  = 1.0
             """, {
                 "stix_id":     s["id"],
                 "name":        s.get("name", ""),
@@ -231,7 +240,8 @@ def stage_load(input_path):
                     t.tactic_order = $tactic_order,
                     t.platforms    = $platforms,
                     t.source       = 'MITRE ATT&CK STIX',
-                    t.source_url   = 'https://github.com/mitre/cti'
+                    t.source_url   = 'https://github.com/mitre/cti',
+                    t.confidence   = 1.0
             """, {
                 "stix_id":      t["id"],
                 "attack_id":    attack_id,
@@ -252,7 +262,8 @@ def stage_load(input_path):
                     a.description = $description,
                     a.aliases     = $aliases,
                     a.source      = 'MITRE ATT&CK STIX',
-                    a.source_url  = 'https://github.com/mitre/cti'
+                    a.source_url  = 'https://github.com/mitre/cti',
+                    a.confidence  = 1.0
             """, {
                 "stix_id":     g["id"],
                 "name":        g.get("name", ""),
@@ -270,7 +281,8 @@ def stage_load(input_path):
                     camp.description = $description,
                     camp.attack_id   = $attack_id,
                     camp.source      = 'MITRE ATT&CK STIX',
-                    camp.source_url  = 'https://github.com/mitre/cti'
+                    camp.source_url  = 'https://github.com/mitre/cti',
+                    camp.confidence  = 1.0
             """, {
                 "stix_id":     c["id"],
                 "name":        c.get("name", ""),
