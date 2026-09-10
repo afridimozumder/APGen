@@ -34,6 +34,30 @@ LOCKBIT_IDS = {
     "S1202": "LockBit 3.0"
 }
 
+# Canonical ATT&CK kill-chain position per tactic, used to order emulation plan
+# phases. Tactics that share an index are alternate names for the same stage:
+# recent ATT&CK splits the old "defense-evasion" into "defense-impairment"
+# (disabling defenses) and "stealth" (hiding activity).
+TACTIC_ORDER = {
+    "reconnaissance":       0,
+    "resource-development": 1,
+    "initial-access":       2,
+    "execution":            3,
+    "persistence":          4,
+    "privilege-escalation": 5,
+    "defense-evasion":      6,   # legacy name
+    "defense-impairment":   6,
+    "stealth":              7,
+    "credential-access":    8,
+    "discovery":            9,
+    "lateral-movement":    10,
+    "collection":          11,
+    "command-and-control": 12,
+    "exfiltration":        13,
+    "impact":              14,
+}
+UNKNOWN_TACTIC_ORDER = 99  # sorts unrecognised tactics to the end of a plan
+
 BUNDLE_URL = "https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json"
 
 # ─────────────────────────────────────────────
@@ -48,6 +72,20 @@ def get_attack_id(obj):
 def get_tactics(obj):
     phases = obj.get("kill_chain_phases", [])
     return [p["phase_name"] for p in phases if p.get("kill_chain_name") == "mitre-attack"]
+
+
+def get_platforms(obj) -> list:
+    """OS/platforms a technique applies to, e.g. ['Windows', 'ESXi']."""
+    return obj.get("x_mitre_platforms", [])
+
+
+def get_tactic_order(tactics: list) -> int:
+    """
+    Earliest kill-chain position among a technique's tactics, for plan ordering.
+    Unknown tactics sort last (UNKNOWN_TACTIC_ORDER) rather than raising.
+    """
+    return min((TACTIC_ORDER.get(t, UNKNOWN_TACTIC_ORDER) for t in tactics),
+               default=UNKNOWN_TACTIC_ORDER)
 
 def find_software_by_attack_ids(objects, attack_ids):
     """Find malware/tool objects matching a set of ATT&CK IDs (e.g. S1199, S1202)."""
@@ -181,22 +219,27 @@ def stage_load(input_path):
         # Technique / SubTechnique nodes
         for t in techniques:
             attack_id = get_attack_id(t)
+            tactics = get_tactics(t)
             label = "SubTechnique" if "." in attack_id else "Technique"
             # Labels cannot be Cypher parameters; value is always "Technique" or "SubTechnique"
             session.run(f"""
                 MERGE (t:{label} {{attack_id: $attack_id}})
-                SET t.stix_id     = $stix_id,
-                    t.name        = $name,
-                    t.description = $description,
-                    t.tactics     = $tactics,
-                    t.source      = 'MITRE ATT&CK STIX',
-                    t.source_url  = 'https://github.com/mitre/cti'
+                SET t.stix_id      = $stix_id,
+                    t.name         = $name,
+                    t.description  = $description,
+                    t.tactics      = $tactics,
+                    t.tactic_order = $tactic_order,
+                    t.platforms    = $platforms,
+                    t.source       = 'MITRE ATT&CK STIX',
+                    t.source_url   = 'https://github.com/mitre/cti'
             """, {
-                "stix_id":     t["id"],
-                "attack_id":   attack_id,
-                "name":        t.get("name", ""),
-                "description": t.get("description", "")[:500],
-                "tactics":     get_tactics(t)
+                "stix_id":      t["id"],
+                "attack_id":    attack_id,
+                "name":         t.get("name", ""),
+                "description":  t.get("description", "")[:500],
+                "tactics":      tactics,
+                "tactic_order": get_tactic_order(tactics),
+                "platforms":    get_platforms(t)
             })
         print(f"      ✅ {len(techniques)} Technique/SubTechnique nodes")
 
