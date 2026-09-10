@@ -1,6 +1,10 @@
 # Neo4j Python driver — connects to your local Docker or Aura instance
 neo4j==5.28.1
 
+# python-dotenv — loads NEO4J_PASS and other credentials from .env, so no
+# password default has to live in source (see scripts/neo4j_env.py)
+python-dotenv==1.2.3
+
 # STIX2 — parses MITRE ATT&CK STIX bundles (Step 1.5.1a)
 stix2==3.0.1
 

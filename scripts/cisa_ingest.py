@@ -31,6 +31,7 @@ from neo4j import GraphDatabase
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from attack_tactics import get_tactic_order, normalize_tactic
+from neo4j_env import NEO4J_URI, NEO4J_USER, neo4j_password
 
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
@@ -39,9 +40,8 @@ for _stream in (sys.stdout, sys.stderr):
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-NEO4J_URI  = os.getenv("NEO4J_URI",  "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASS = os.getenv("NEO4J_PASS", "LockBit2025!")
+# Neo4j connection settings come from scripts/neo4j_env.py, which reads them
+# from .env or the environment. No password default lives in source.
 
 ADVISORY_ID  = "AA23-165A"
 ADVISORY_URL = "https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-165a"
@@ -223,7 +223,7 @@ def stage_load(input_path, aliases_path=None):
     print(f"      Tools      : {len(tools)}")
 
     print(f"\n[2/4] Connecting to Neo4j at {NEO4J_URI} ...")
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, neo4j_password()))
     provenance = {"source": SOURCE_NAME, "url": data["advisory_url"]}
 
     with driver.session() as session:

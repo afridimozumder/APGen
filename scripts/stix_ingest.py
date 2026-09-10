@@ -29,6 +29,7 @@ from attack_tactics import (  # noqa: F401  (re-exported for tests)
     get_tactic_order,
     normalize_tactic,
 )
+from neo4j_env import NEO4J_URI, NEO4J_USER, neo4j_password
 
 # Windows consoles default to cp1252, which cannot encode the status glyphs
 # used in this script's output. Streams replaced by a test runner or a pipe
@@ -40,9 +41,8 @@ for _stream in (sys.stdout, sys.stderr):
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-NEO4J_URI  = os.getenv("NEO4J_URI",  "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASS = os.getenv("NEO4J_PASS", "LockBit2025!")
+# Neo4j connection settings come from scripts/neo4j_env.py, which reads them
+# from .env or the environment. No password default lives in source.
 
 # LockBit is SOFTWARE in ATT&CK, not a group
 LOCKBIT_IDS = {
@@ -250,7 +250,7 @@ def stage_load(input_path):
     print(f"      Relationships    : {len(relations)}")
 
     print(f"\n[2/4] Connecting to Neo4j at {NEO4J_URI} ...")
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, neo4j_password()))
 
     with driver.session() as session:
 

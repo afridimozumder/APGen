@@ -63,6 +63,12 @@ Copy-Item .env.example .env
 Edit `.env` and set `NEO4J_PASS` to the password for your local Neo4j instance, and
 `OPENAI_API_KEY` if you intend to run LLM-backed pipeline stages.
 
+`.env` is loaded automatically at startup and is gitignored. Real environment variables
+take precedence over it, so an HPC job or CI run can override without editing the file.
+There is no built-in default password: any `--stage load` exits with an explanatory
+message when `NEO4J_PASS` is unset. The `--stage extract` stages need no credentials at
+all, which is what lets them run on a compute cluster with no access to Neo4j.
+
 ### 3. Run Neo4j locally (Docker)
 
 ```bash
