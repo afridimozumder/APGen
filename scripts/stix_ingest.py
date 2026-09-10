@@ -22,6 +22,14 @@ import argparse
 import requests
 from neo4j import GraphDatabase
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from attack_tactics import (  # noqa: F401  (re-exported for tests)
+    TACTIC_ORDER,
+    UNKNOWN_TACTIC_ORDER,
+    get_tactic_order,
+    normalize_tactic,
+)
+
 # Windows consoles default to cp1252, which cannot encode the status glyphs
 # used in this script's output. Streams replaced by a test runner or a pipe
 # may not expose reconfigure(), so only call it where it exists.
@@ -42,30 +50,6 @@ LOCKBIT_IDS = {
     "S1202": "LockBit 3.0"
 }
 
-# Canonical ATT&CK kill-chain position per tactic, used to order emulation plan
-# phases. Tactics that share an index are alternate names for the same stage:
-# recent ATT&CK splits the old "defense-evasion" into "defense-impairment"
-# (disabling defenses) and "stealth" (hiding activity).
-TACTIC_ORDER = {
-    "reconnaissance":       0,
-    "resource-development": 1,
-    "initial-access":       2,
-    "execution":            3,
-    "persistence":          4,
-    "privilege-escalation": 5,
-    "defense-evasion":      6,   # legacy name
-    "defense-impairment":   6,
-    "stealth":              7,
-    "credential-access":    8,
-    "discovery":            9,
-    "lateral-movement":    10,
-    "collection":          11,
-    "command-and-control": 12,
-    "exfiltration":        13,
-    "impact":              14,
-}
-UNKNOWN_TACTIC_ORDER = 99  # sorts unrecognised tactics to the end of a plan
-
 BUNDLE_URL = "https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json"
 
 # ─────────────────────────────────────────────
@@ -85,15 +69,6 @@ def get_tactics(obj):
 def get_platforms(obj) -> list:
     """OS/platforms a technique applies to, e.g. ['Windows', 'ESXi']."""
     return obj.get("x_mitre_platforms", [])
-
-
-def get_tactic_order(tactics: list) -> int:
-    """
-    Earliest kill-chain position among a technique's tactics, for plan ordering.
-    Unknown tactics sort last (UNKNOWN_TACTIC_ORDER) rather than raising.
-    """
-    return min((TACTIC_ORDER.get(t, UNKNOWN_TACTIC_ORDER) for t in tactics),
-               default=UNKNOWN_TACTIC_ORDER)
 
 def find_software_by_attack_ids(objects, attack_ids):
     """Find malware/tool objects matching a set of ATT&CK IDs (e.g. S1199, S1202)."""
@@ -241,7 +216,10 @@ def stage_load(input_path):
                     t.platforms    = $platforms,
                     t.source       = 'MITRE ATT&CK STIX',
                     t.source_url   = 'https://github.com/mitre/cti',
-                    t.confidence   = 1.0
+                    t.confidence   = 1.0,
+                    t.sources      = CASE WHEN 'MITRE ATT&CK STIX' IN coalesce(t.sources, [])
+                                          THEN t.sources
+                                          ELSE coalesce(t.sources, []) + 'MITRE ATT&CK STIX' END
             """, {
                 "stix_id":      t["id"],
                 "attack_id":    attack_id,
