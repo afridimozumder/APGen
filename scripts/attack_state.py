@@ -18,6 +18,18 @@ The mapping is validated against the MITRE ATT&CK Evaluations ER6 LockBit plan
 (see scripts/state_annotate.py): replaying these rules over that published,
 ordered plan must leave every step's preconditions satisfied. If it does not,
 the rules are wrong, not the plan.
+
+KNOWN LIMITATION — inert tactics. `execution` and `persistence` establish no new
+state, because nothing downstream gates on them. Techniques whose only tactics
+are those (T1047, T1059.001, T1059.003, T1072, T1106, T1569.002, T1136) are
+therefore inert in the precondition check: they can neither fail it nor help
+satisfy a later step. Part 3's precondition-satisfaction rate is consequently
+driven entirely by the three real gates — lateral movement needs credentials,
+exfiltration needs c2, impact needs elevation. This is deliberate: inventing a
+state such as `persistence_established` that no tactic ever consumes would pad
+the model without making the metric more discriminating. Whether a plan omits
+persistence altogether is a completeness question, measured separately by
+Part 3's technique-coverage metric.
 """
 
 from attack_tactics import TACTIC_ORDER, normalize_tactic

@@ -34,7 +34,7 @@ import requests
 from neo4j import GraphDatabase
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from attack_tactics import normalize_tactic
+from attack_tactics import TACTIC_ORDER, normalize_tactic
 from attack_state import technique_state, unmet_preconditions, TACTIC_STATE
 
 for _stream in (sys.stdout, sys.stderr):
@@ -83,13 +83,23 @@ TACTIC_DISPLAY = [
 # HELPERS (parsing)
 # ─────────────────────────────────────────────
 def tactics_in_heading(text: str) -> list:
-    """Canonical tactics named in a step heading, in kill-chain reading order."""
+    """
+    Canonical tactics named in a step heading, in kill-chain order.
+
+    TACTIC_DISPLAY is ordered longest-display-first so that "command and control"
+    matches before any shorter fragment — that is match order, not attack order.
+    check_spine replays a step's tactics in list order, so they are sorted by
+    kill-chain position before returning: a compound step such as "Privilege
+    Escalation and Command & Control" must be replayed in the order its tactics
+    would actually occur, or a future step whose tactics depend on one another
+    would be evaluated the wrong way round.
+    """
     norm = text.lower().replace("&", "and")
     found = []
     for display, canonical in TACTIC_DISPLAY:
         if display in norm and canonical not in found:
             found.append(canonical)
-    return found
+    return sorted(found, key=lambda t: TACTIC_ORDER.get(t, 99))
 
 
 def extract_voice_track(chunk: str) -> str:
@@ -181,7 +191,7 @@ def annotate_techniques(session):
     for t in techniques:
         pre, eff = technique_state(t["tactics"] or [])
         session.run("""
-            MATCH (t {attack_id: $id})
+            MATCH (t {attack_id: $id}) WHERE t:Technique OR t:SubTechnique
             SET t.preconditions = $pre, t.effects = $eff, t.state_model = $model
         """, {"id": t["id"], "pre": pre, "eff": eff, "model": STATE_MODEL})
     return len(techniques)
@@ -289,11 +299,18 @@ def stage_load(input_path):
 
     print("\n[4/4] Verifying ...")
     with driver.session() as session:
-        no_pre = session.run(
-            "MATCH (t) WHERE (t:Technique OR t:SubTechnique) AND t.effects IS NULL "
+        # An unannotated technique is a failure; an annotated one with no effects
+        # is expected, since execution and persistence establish no new state.
+        # IS NULL cannot tell the two apart, because an empty list is not null.
+        unannotated = session.run(
+            "MATCH (t) WHERE (t:Technique OR t:SubTechnique) AND t.state_model IS NULL "
             "RETURN count(*) AS c").single()["c"]
+        no_effects = session.run(
+            "MATCH (t) WHERE (t:Technique OR t:SubTechnique) "
+            "AND size(coalesce(t.effects, [])) = 0 RETURN count(*) AS c").single()["c"]
         steps = session.run("MATCH (s:EmulationStep) RETURN count(*) AS c").single()["c"]
-        print(f"      Techniques without effects : {no_pre}")
+        print(f"      Techniques not annotated    : {unannotated}  (must be 0)")
+        print(f"      Annotated, establish no state: {no_effects}  (execution/persistence)")
         print(f"      EmulationStep nodes         : {steps}")
     driver.close()
     print("\n✅ Step 1.5.5 complete — preconditions/effects annotated and spine loaded!")
