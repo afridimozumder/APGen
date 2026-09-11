@@ -1,44 +1,44 @@
 #!/usr/bin/env python3
 """
-Part 2, Phase C (slice 1) — KG-grounded emulation plan generator.
+Part 2, Phase C — LockBit emulation plan generation.
 
-Turns the LockBit subgraph produced by graphrag_retrieve into one Adversary
-Emulation Plan by prompting Claude and parsing structured JSON back. This is the
-first half of RQ2 ("can the KG be used to generate a plan") for a single scenario.
+Two generation modes share one plan schema and one model backend:
 
-WHAT THIS IS NOT: the graph-based validator, the refinement loop, the naked-LLM
-baseline, and batch generation are separate later slices. `ungrounded_techniques`
-here is a lightweight *signal* — it reports plan steps whose technique_id was not
-in the context the model was given — not the validator, which additionally checks
-precondition order, tactic ordering and environment fit.
+  * KG-GROUNDED (generate_plan / refine_plan): the model is given the retrieved
+    LockBit subgraph and constrained to use only those techniques; refine_plan
+    validates each attempt and re-prompts with feedback on failure.
+  * NAKED BASELINE (generate_baseline_plan): the same task with NO KG context —
+    the control arm for RQ2. Single-shot and unrefined by design; its quality is
+    measured afterwards against the same KG (see graphrag_batch.py).
 
-WHY NO --stage extract / --stage load: that rule exists because the HPC cannot
-reach the local Neo4j when *writing*. Generation reads the subgraph (locally, or
-from a saved dump) and calls the Claude API; it writes nothing to Neo4j, and it
-runs locally, so the two-stage split does not apply.
+MODEL BACKEND: generation goes through OpenRouter (an OpenAI-compatible gateway)
+via the `openai` SDK, so the model is a single env var (OPENROUTER_MODEL) and
+"use a bigger model next time" is a config change, not a code change — OpenRouter
+serves Claude, GPT, Gemini, DeepSeek, Llama, etc. through one endpoint. The plan
+schema relies on structured outputs (json_schema), so the chosen model must
+support them; the default openai/gpt-4o-mini does.
 
-GROUNDING: the whole point is that the model may use ONLY the techniques handed
-to it. That constraint is stated in the prompt (build_prompt) and measured after
-the fact (ungrounded_techniques). Structured outputs guarantee the shape of the
-plan; the prompt + the grounding check guard its content.
+WHY NO --stage extract / --stage load: that rule is for scripts that WRITE to
+Neo4j from the HPC. Generation reads the subgraph (locally, or from a saved dump)
+and calls the model API; it writes nothing to Neo4j and runs locally.
 
 Usage:
-  # From a saved retrieval dump (no Neo4j needed):
+  # KG-grounded, from a saved retrieval dump (no Neo4j needed):
   python3 graphrag_generate.py --subgraph outputs/subgraph_3.0_windows.json \
-      --objective "encrypt files and exfiltrate data" \
+      --objective "encrypt files and exfiltrate data" --refine \
       --out outputs/plans/lockbit_3.0_windows_001.json
 
   # Retrieving live from Neo4j in one shot:
-  python3 graphrag_generate.py --version 3.0 --platform Windows \
-      --objective "encrypt files and exfiltrate data"
+  python3 graphrag_generate.py --version 3.0 --platform Windows --objective "..."
 
-Requires ANTHROPIC_API_KEY in the environment (or .env); the SDK reads it.
+Requires OPENROUTER_API_KEY in the environment (or .env); the SDK reads it.
 """
 
 import os
 import sys
 import json
 import argparse
+from collections import namedtuple
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict
@@ -55,18 +55,27 @@ for _stream in (sys.stdout, sys.stderr):
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-# Default per the claude-api skill; override with ANTHROPIC_MODEL for a cheaper
-# model (e.g. claude-sonnet-5) without touching code.
-MODEL = "claude-opus-5"
-# Adaptive thinking is enabled in generate_plan, and thinking tokens count against
-# this cap — a 60-technique plan plus its reasoning does not reliably fit in 8k.
-# 16k matches the SDK's non-streaming guidance; _ensure_plan reports a truncated
-# response instead of letting it surface as a confusing NoneType error later.
-MAX_TOKENS = 16000
+# Generation runs through OpenRouter (OpenAI-compatible). Override the model with
+# OPENROUTER_MODEL without touching code; to go bigger later, point it at a
+# stronger model OpenRouter serves. The model MUST support json_schema structured
+# outputs (the plan schema depends on it); the default gpt-4o-mini does.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+MODEL = "openai/gpt-4o-mini"
+MAX_TOKENS = 16000  # a full plan is a few thousand tokens; generous headroom
 
 
 def resolve_model() -> str:
-    return os.getenv("ANTHROPIC_MODEL", MODEL)
+    return os.getenv("OPENROUTER_MODEL", MODEL)
+
+
+def _client():
+    """An OpenAI SDK client pointed at OpenRouter. Reads OPENROUTER_API_KEY."""
+    from openai import OpenAI
+    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.getenv("OPENROUTER_API_KEY"))
+
+
+# Normalised generation result, so callers never touch the raw SDK response shape.
+GenResult = namedtuple("GenResult", "plan usage")
 
 
 # ─────────────────────────────────────────────
@@ -103,7 +112,7 @@ class EmulationPlan(BaseModel):
 
 
 # ─────────────────────────────────────────────
-# PROMPT (pure)
+# PROMPTS (pure)
 # ─────────────────────────────────────────────
 SYSTEM_PROMPT = (
     "You are an adversary emulation planner producing plans for an authorized "
@@ -115,10 +124,21 @@ SYSTEM_PROMPT = (
     "operational description for each step, grounded in the procedures in the context."
 )
 
+# The baseline is the control arm: the SAME task and output schema, but no KG
+# context and no "use only these techniques" constraint. The model works from its
+# own knowledge, which is what lets Part 3 measure how much grounding helped.
+BASELINE_SYSTEM_PROMPT = (
+    "You are an adversary emulation planner producing plans for an authorized "
+    "lab/sandbox exercise. Using your own knowledge of the named adversary's "
+    "real-world tradecraft, produce a realistic emulation plan as structured JSON, "
+    "with phases ordered along the ATT&CK kill chain from initial access through to "
+    "impact and a concise operational description for each step."
+)
+
 
 def build_prompt(subgraph: dict, feedback: str = None) -> tuple:
     """
-    (system, user) messages for a subgraph. Pure — no API, no I/O.
+    (system, user) messages for the KG-grounded mode. Pure — no API, no I/O.
 
     When `feedback` is given (a refinement retry), it is appended so the model
     sees exactly what was wrong with its previous attempt.
@@ -139,6 +159,19 @@ def build_prompt(subgraph: dict, feedback: str = None) -> tuple:
     return SYSTEM_PROMPT, user
 
 
+def build_baseline_prompt(version: str, environment: str, objective: str) -> tuple:
+    """(system, user) messages for the naked baseline. Pure. No KG context."""
+    user = (
+        f"Adversary: LockBit {version} ({SOFTWARE_ID.get(version, '')})\n"
+        f"Target environment: {environment}\n"
+        f"Objective: {objective or 'emulate a representative LockBit intrusion'}\n"
+        "\n"
+        "Produce the emulation plan as structured JSON, with each step referencing an "
+        "ATT&CK technique_id and the phases in ATT&CK kill-chain order."
+    )
+    return BASELINE_SYSTEM_PROMPT, user
+
+
 # ─────────────────────────────────────────────
 # GROUNDING SIGNAL (pure — NOT the validator)
 # ─────────────────────────────────────────────
@@ -154,10 +187,10 @@ def ungrounded_techniques(plan: EmulationPlan, subgraph: dict) -> list:
     """
     Plan technique_ids that were NOT in the context handed to the model.
 
-    A grounding signal only: a non-empty result means the model used a technique
-    it was not given, which is exactly the hallucination the KG grounding is meant
-    to prevent. This does not check precondition order, tactic ordering, or
-    environment fit — that is the separate validator slice.
+    A grounding signal only: a non-empty result means a technique the KG does not
+    attribute to LockBit — for a grounded plan that is a hallucination; for the
+    baseline it is the off-KG rate the comparison measures. This does not check
+    precondition order, tactic ordering, or environment fit — that is the validator.
     """
     return sorted(plan_technique_ids(plan) - subgraph_technique_ids(subgraph))
 
@@ -165,55 +198,61 @@ def ungrounded_techniques(plan: EmulationPlan, subgraph: dict) -> list:
 # ─────────────────────────────────────────────
 # GENERATION (the only part that calls the API)
 # ─────────────────────────────────────────────
-def generate_plan(subgraph: dict, client=None, model=None, feedback=None):
-    """
-    Generate a plan from a subgraph. Returns the raw API response, which carries
-    `.parsed_output` (a validated EmulationPlan) and `.usage`.
-
-    `client` is injectable so tests can pass a stub without hitting the API or
-    needing a key. When omitted, a real Anthropic client is constructed (which
-    requires ANTHROPIC_API_KEY). `feedback` is threaded into the prompt on a
-    refinement retry.
-    """
-    if client is None:
-        import anthropic
-        client = anthropic.Anthropic()
-    system, user = build_prompt(subgraph, feedback=feedback)
-    response = client.messages.parse(
+def _parse(client, model, system, user) -> GenResult:
+    """One structured-output call to OpenRouter. Returns a GenResult or raises."""
+    response = client.beta.chat.completions.parse(
         model=model or resolve_model(),
         max_tokens=MAX_TOKENS,
-        thinking={"type": "adaptive"},
-        system=system,
-        messages=[{"role": "user", "content": user}],
-        output_format=EmulationPlan,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        response_format=EmulationPlan,
     )
     _ensure_plan(response)
-    return response
+    return GenResult(plan=response.choices[0].message.parsed, usage=response.usage)
+
+
+def generate_plan(subgraph: dict, client=None, model=None, feedback=None) -> GenResult:
+    """
+    Generate one KG-grounded plan. Returns GenResult(plan, usage).
+
+    `client` is injectable so tests can pass a stub without hitting the API or
+    needing a key; when omitted, an OpenRouter client is constructed (which needs
+    OPENROUTER_API_KEY). `feedback` is threaded into the prompt on a refine retry.
+    """
+    client = client or _client()
+    system, user = build_prompt(subgraph, feedback=feedback)
+    return _parse(client, model, system, user)
+
+
+def generate_baseline_plan(version: str, environment: str, objective: str,
+                           client=None, model=None) -> GenResult:
+    """Generate one naked-baseline plan (no KG context). Returns GenResult."""
+    client = client or _client()
+    system, user = build_baseline_prompt(version, environment, objective)
+    return _parse(client, model, system, user)
 
 
 def _ensure_plan(response) -> None:
     """
     Fail loudly if the turn did not yield a parseable plan.
 
-    Without this, a refusal or a max_tokens truncation leaves parsed_output as
-    None, surfacing later only as an opaque 'NoneType has no attribute phases'.
-    Refusal is a realistic mode here — this is ransomware-emulation content — so
-    the message names the category the API reported.
+    Without this, a refusal or a length truncation leaves parsed as None,
+    surfacing later only as an opaque 'NoneType has no attribute phases'. Refusal
+    is a realistic mode here — this is ransomware-emulation content.
     """
-    reason = getattr(response, "stop_reason", None)
-    if reason == "refusal":
-        details = getattr(response, "stop_details", None)
-        category = getattr(details, "category", None)
-        explanation = (getattr(details, "explanation", "") or "").strip()
-        raise RuntimeError(
-            f"The model refused to generate the plan (category: {category}). "
-            f"{explanation}".strip())
-    if reason == "max_tokens":
-        raise RuntimeError(
-            "The response hit max_tokens before a complete plan was returned; "
-            "raise MAX_TOKENS in graphrag_generate.py.")
-    if getattr(response, "parsed_output", None) is None:
-        raise RuntimeError(f"No plan was parsed from the response (stop_reason: {reason}).")
+    choice = response.choices[0]
+    message = choice.message
+    if getattr(message, "refusal", None):
+        raise RuntimeError(f"The model refused to generate the plan: {message.refusal}")
+    if choice.finish_reason == "length":
+        raise RuntimeError("The response hit max_tokens before a complete plan was "
+                           "returned; raise MAX_TOKENS in graphrag_generate.py.")
+    if getattr(message, "parsed", None) is None:
+        raise RuntimeError("No plan was parsed from the response "
+                           f"(finish_reason: {choice.finish_reason}). The model may not "
+                           "support structured outputs; try another OPENROUTER_MODEL.")
 
 
 def refine_plan(subgraph: dict, client=None, model=None, max_attempts=3):
@@ -230,19 +269,17 @@ def refine_plan(subgraph: dict, client=None, model=None, max_attempts=3):
     """
     import graphrag_validate as gv
 
-    if client is None:
-        import anthropic
-        client = anthropic.Anthropic()
+    client = client or _client()
     model = model or resolve_model()
 
     feedback = None
     history = []
     plan = report = None
     for attempt in range(1, max_attempts + 1):
-        response = generate_plan(subgraph, client=client, model=model, feedback=feedback)
-        plan = response.parsed_output
+        result = generate_plan(subgraph, client=client, model=model, feedback=feedback)
+        plan = result.plan
         report = gv.validate_plan(plan, subgraph)
-        history.append({"attempt": attempt, "report": report, "usage": response.usage})
+        history.append({"attempt": attempt, "report": report, "usage": result.usage})
         if report.valid:
             break
         feedback = gv.format_feedback(report)
@@ -271,8 +308,8 @@ def build_document(plan: EmulationPlan, subgraph: dict, usage, model: str,
             "objective":   subgraph["objective"],
         },
         "usage": {
-            "input_tokens":  getattr(usage, "input_tokens", None),
-            "output_tokens": getattr(usage, "output_tokens", None),
+            "prompt_tokens":     getattr(usage, "prompt_tokens", None),
+            "completion_tokens": getattr(usage, "completion_tokens", None),
         } if usage is not None else None,
         "ungrounded_techniques": (report.ungrounded_techniques if report is not None
                                   else ungrounded_techniques(plan, subgraph)),
@@ -342,8 +379,8 @@ def main():
                                                 max_attempts=args.max_attempts)
             usage = history[-1]["usage"]
         else:
-            response = generate_plan(subgraph, model=model)
-            plan, report, history, usage = response.parsed_output, None, None, response.usage
+            result = generate_plan(subgraph, model=model)
+            plan, report, history, usage = result.plan, None, None, result.usage
     except Exception as exc:  # noqa: BLE001 — CLI boundary: turn any API failure into a clear message
         raise SystemExit(_explain(exc))
 
@@ -375,6 +412,8 @@ def _summarise_failures(report) -> str:
     parts = []
     if report.ungrounded_techniques:
         parts.append(f"{len(report.ungrounded_techniques)} ungrounded")
+    if report.mislabelled_steps:
+        parts.append(f"{len(report.mislabelled_steps)} mislabelled")
     if report.precondition_failures:
         parts.append(f"{len(report.precondition_failures)} precondition")
     if report.ordering_violations:
@@ -392,13 +431,14 @@ def _is_valid(report, plan, subgraph) -> bool:
 def _explain(exc: Exception) -> str:
     """Turn the likely API failures into an actionable message for the CLI user."""
     name = type(exc).__name__
-    if name == "AuthenticationError" or "api_key" in str(exc).lower():
-        return ("Anthropic API authentication failed. Set ANTHROPIC_API_KEY in .env "
+    text = str(exc).lower()
+    if name == "AuthenticationError" or "api_key" in text or "no auth" in text or "401" in text:
+        return ("OpenRouter authentication failed. Set OPENROUTER_API_KEY in .env "
                 "or the environment (see .env.example).")
     if name == "RateLimitError":
-        return "Rate limited by the Anthropic API. Wait and retry."
+        return "Rate limited by OpenRouter. Wait and retry."
     if name == "APIConnectionError":
-        return "Could not reach the Anthropic API. Check your network connection."
+        return "Could not reach OpenRouter. Check your network connection."
     return f"Plan generation failed ({name}): {exc}"
 
 

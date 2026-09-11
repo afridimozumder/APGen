@@ -14,11 +14,10 @@ requests==2.32.3
 # PDF table extraction — government advisories (Step 1.5.2)
 pdfplumber==0.11.4
 
-# OpenAI API — LLM-based NLP extraction from vendor reports (Step 1.5.3)
+# OpenAI SDK — Part 2 plan generation via OpenRouter (OpenAI-compatible gateway;
+# scripts/graphrag_generate.py, graphrag_batch.py). Also used for vendor-report NLP
+# extraction (Step 1.5.3).
 openai==1.78.0
-
-# Anthropic API — Claude plan generation, Part 2 Phase C (scripts/graphrag_generate.py)
-anthropic==1.5.0
 
 # NLP toolkit — entity/relation extraction (Step 1.5.3)
 spacy==3.8.4

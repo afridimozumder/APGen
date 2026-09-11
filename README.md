@@ -34,8 +34,9 @@ APGen/
 │   ├── cisa_ingest.py          two-stage CISA advisory AA23-165A → Neo4j ingester
 │   ├── state_annotate.py       annotate preconditions/effects + load MITRE Evals spine
 │   ├── graphrag_retrieve.py    GraphRAG retrieval — KG subgraph → prompt context
-│   ├── graphrag_generate.py    LLM plan generation + refinement loop — subgraph → Claude → plan
-│   └── graphrag_validate.py    graph validator — grounding, preconditions, kill-chain order
+│   ├── graphrag_generate.py    plan generation (KG-grounded + naked baseline) + refinement loop
+│   ├── graphrag_validate.py    graph validator — grounding, preconditions, kill-chain order
+│   └── graphrag_batch.py       batch: matched baseline + grounded plans → manifest
 ├── requirements.txt            runtime dependencies
 ├── requirements-dev.txt        test/dev dependencies
 ├── .env.example                template for local secrets (Neo4j, OpenAI)
@@ -167,10 +168,13 @@ would be teaching to the test.
 
 ### 6. Generate an emulation plan (Part 2, Phase C)
 
-`graphrag_generate.py` prompts Claude with a retrieved subgraph and parses a structured plan
-back. It writes nothing to Neo4j, so it runs locally and needs no `extract`/`load` split;
-it needs `ANTHROPIC_API_KEY` (in `.env` or the environment). The model defaults to
-`claude-opus-5` and can be overridden with `ANTHROPIC_MODEL`.
+`graphrag_generate.py` prompts an LLM with a retrieved subgraph and parses a structured plan
+back. Generation goes through **OpenRouter** (an OpenAI-compatible gateway), so the model is a
+single env var and switching to a bigger model later is a config change, not a code change. It
+writes nothing to Neo4j, so it runs locally and needs no `extract`/`load` split; it needs
+`OPENROUTER_API_KEY` (in `.env` or the environment). The model defaults to
+`openai/gpt-4o-mini` and can be overridden with `OPENROUTER_MODEL` — pick one that supports
+structured outputs (`json_schema`), which the plan schema relies on.
 
 ```powershell
 # From a saved retrieval dump (no Neo4j needed):
@@ -196,12 +200,35 @@ python scripts/graphrag_generate.py --subgraph outputs/subgraph_3.0_windows.json
     --out outputs/plans/lockbit_3.0_windows_001.json
 ```
 
-The validator (`graphrag_validate.py`) checks three things against the retrieved subgraph:
+The validator (`graphrag_validate.py`) checks four things against the retrieved subgraph:
 **grounding** (no hallucinated techniques; environment fit follows, since the subgraph was
-already platform-filtered), **precondition satisfaction** (each step's preconditions, derived
-from the authoritative `attack_state` model — not from the plan's self-reported fields — must
-be established by earlier steps), and **kill-chain ordering** (phases in non-decreasing ATT&CK
-order). A saved refined plan records its validation report and how many attempts it took.
+already platform-filtered), **tactic labelling** (a step's phase must be a tactic the KG
+actually records for that technique — so a plan can't dodge a gate by mislabelling a step),
+**precondition satisfaction** (each step's preconditions, derived from the authoritative
+`attack_state` model — not from the plan's self-reported fields — must be established by
+earlier steps), and **kill-chain ordering** (phases in non-decreasing ATT&CK order). A saved
+refined plan records its validation report and how many attempts it took.
+
+### 7. Batch-generate the evaluation dataset (Part 2, Phase C)
+
+`graphrag_batch.py` produces the matched dataset Part 3 evaluates: for each scenario
+(LockBit 2.0/3.0 × Windows AD/endpoint) and each replicate, a **baseline** plan (naked LLM,
+no KG context — the control) and a **KG-grounded** plan (with the refinement loop), both
+validated against the same subgraph. It needs Neo4j up and `OPENROUTER_API_KEY` set.
+
+```powershell
+# Smoke run first — one scenario, one pair:
+python scripts/graphrag_batch.py --limit 1 --replicates 1
+
+# Full run: 4 scenarios × 3 replicates × 2 arms = 24 plans:
+python scripts/graphrag_batch.py
+```
+
+Each plan is written to `outputs/plans/`, with a `batch_manifest.json` recording every plan's
+verdict and a grounded-vs-baseline summary — the first look at the RQ2 result. Re-running
+skips plans that already exist (use `--overwrite` to regenerate), so an interrupted batch
+resumes without re-spending. The grounded arm's single-shot (pre-refinement) verdict is
+recorded too, so the effect of grounding can be separated from the effect of refinement.
 
 ---
 

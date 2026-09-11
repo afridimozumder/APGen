@@ -31,3 +31,6 @@ APPENDIX_Code_Review_and_Bug_Fixes.md
 # Claude Code local settings
 .claude/settings.local.json
 CLAUDE.local.md
+
+# Temporary API keys
+API.txt
