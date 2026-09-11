@@ -33,7 +33,9 @@ APGen/
 │   ├── stix_ingest.py          two-stage MITRE ATT&CK STIX → Neo4j ingester
 │   ├── cisa_ingest.py          two-stage CISA advisory AA23-165A → Neo4j ingester
 │   ├── state_annotate.py       annotate preconditions/effects + load MITRE Evals spine
-│   └── graphrag_retrieve.py    GraphRAG retrieval — KG subgraph → prompt context
+│   ├── graphrag_retrieve.py    GraphRAG retrieval — KG subgraph → prompt context
+│   ├── graphrag_generate.py    LLM plan generation + refinement loop — subgraph → Claude → plan
+│   └── graphrag_validate.py    graph validator — grounding, preconditions, kill-chain order
 ├── requirements.txt            runtime dependencies
 ├── requirements-dev.txt        test/dev dependencies
 ├── .env.example                template for local secrets (Neo4j, OpenAI)
@@ -162,6 +164,44 @@ rather than one payload build. Techniques ingested only for their platform data 
 The `EmulationStep` reference chain is deliberately never retrieved: it is MITRE's own
 published plan and serves as Part 3's ground truth, so putting it in the generation context
 would be teaching to the test.
+
+### 6. Generate an emulation plan (Part 2, Phase C)
+
+`graphrag_generate.py` prompts Claude with a retrieved subgraph and parses a structured plan
+back. It writes nothing to Neo4j, so it runs locally and needs no `extract`/`load` split;
+it needs `ANTHROPIC_API_KEY` (in `.env` or the environment). The model defaults to
+`claude-opus-5` and can be overridden with `ANTHROPIC_MODEL`.
+
+```powershell
+# From a saved retrieval dump (no Neo4j needed):
+python scripts/graphrag_generate.py --subgraph outputs/subgraph_3.0_windows.json `
+    --objective "encrypt files and exfiltrate data" `
+    --out outputs/plans/lockbit_3.0_windows_001.json
+
+# Or retrieving live in one shot:
+python scripts/graphrag_generate.py --version 3.0 --platform Windows `
+    --objective "encrypt files and exfiltrate data"
+```
+
+The prompt constrains the model to use **only** the techniques in the retrieved context;
+after generation the tool reports any `ungrounded_techniques` — plan steps whose technique
+was not in that context.
+
+Add `--refine` to validate each plan and re-prompt with feedback when it fails, up to
+`--max-attempts` (default 3):
+
+```powershell
+python scripts/graphrag_generate.py --subgraph outputs/subgraph_3.0_windows.json `
+    --objective "encrypt files and exfiltrate data" --refine `
+    --out outputs/plans/lockbit_3.0_windows_001.json
+```
+
+The validator (`graphrag_validate.py`) checks three things against the retrieved subgraph:
+**grounding** (no hallucinated techniques; environment fit follows, since the subgraph was
+already platform-filtered), **precondition satisfaction** (each step's preconditions, derived
+from the authoritative `attack_state` model — not from the plan's self-reported fields — must
+be established by earlier steps), and **kill-chain ordering** (phases in non-decreasing ATT&CK
+order). A saved refined plan records its validation report and how many attempts it took.
 
 ---
 

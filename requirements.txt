@@ -17,6 +17,9 @@ pdfplumber==0.11.4
 # OpenAI API — LLM-based NLP extraction from vendor reports (Step 1.5.3)
 openai==1.78.0
 
+# Anthropic API — Claude plan generation, Part 2 Phase C (scripts/graphrag_generate.py)
+anthropic==1.5.0
+
 # NLP toolkit — entity/relation extraction (Step 1.5.3)
 spacy==3.8.4
 
