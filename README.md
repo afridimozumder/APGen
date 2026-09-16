@@ -16,10 +16,33 @@ Master's thesis project at Aalborg University (AAU), Denmark.
 
 ## Status
 
-Phase A — Knowledge Graph construction. Two sources are ingested: MITRE ATT&CK STIX
+**Part 1 — Knowledge Graph (Phase A): built.** Two sources are ingested: MITRE ATT&CK STIX
 (LockBit 2.0 / `S1199` and LockBit 3.0 / `S1202`) and CISA advisory AA23-165A. Together
 they cover the kill chain from initial access to impact, with 14 techniques independently
-attested by both. Further sources will be added incrementally.
+attested by both. Techniques are annotated with authored preconditions/effects
+(`scripts/attack_state.py`), validated by replaying them over MITRE's ordered ER6 LockBit
+plan, which is also loaded as the reference spine for Part 3. Further sources will be added
+incrementally.
+
+**Part 2 — Plan generation (Phases B and C): end-to-end and producing plans.** The full
+pipeline runs: retrieve a version/platform subgraph (§5) → generate a structured plan via
+OpenRouter (§6) → validate it against that subgraph on grounding, tactic labelling,
+preconditions and kill-chain order → refine on failure → batch both arms into a matched
+dataset (§7). A first full batch (`openai/gpt-4o-mini`, 4 scenarios × 3 replicates × 2 arms
+= 24 plans) completed and is analysed:
+
+- **Grounding works.** Mean invented techniques per plan: **4.5 baseline vs 0.08 grounded**;
+  12/12 baseline plans contain at least one hallucinated technique, against 1/12 grounded.
+- **Validity alone is not a quality score.** Grounded plans reach 83% valid vs 0% baseline,
+  but the two arms fail in opposite directions: baseline plans are complete yet always
+  invalid, while grounded plans are usually valid yet mostly hollow — only 3/12 reach both
+  encryption and exfiltration. The validator checks for the *absence* of errors, so a short
+  plan passes by having nothing to flag, and the refinement loop can raise validity by
+  dropping the offending step.
+
+Open before Part 3: add a completeness metric (ER6 technique coverage plus an
+objective-reached flag) alongside validity, and re-run against a stronger model. The
+existing dataset is kept as-is rather than regenerated.
 
 ---
 
@@ -253,7 +276,7 @@ recorded too, so the effect of grounding can be separated from the effect of ref
 - Cypher writes use `MERGE` rather than `CREATE`, making every ingestion script safe
   to re-run.
 - Credentials are read from environment variables (`NEO4J_URI`, `NEO4J_USER`,
-  `NEO4J_PASS`, `OPENAI_API_KEY`); never hard-coded.
+  `NEO4J_PASS`, `OPENROUTER_API_KEY`); never hard-coded.
 
 ---
 
