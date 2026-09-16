@@ -1,4 +1,4 @@
-# APGen — Adversary Plan Generation with Knowledge Graphs and LLMs
+# APGen: Adversary Plan Generation with Knowledge Graphs and LLM
 
 A research codebase that builds a LockBit-focused Cyber Threat Intelligence Knowledge
 Graph (CTI-KG) in Neo4j and uses it as structured ground truth for a GraphRAG + LLM
