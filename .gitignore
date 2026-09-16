@@ -27,6 +27,8 @@ Project_Plan.md
 Project Context/
 tests/
 APPENDIX_Code_Review_and_Bug_Fixes.md
+FINDINGS_Part2_Batch_Run.md
+Notes.txt
 
 # Claude Code local settings
 .claude/settings.local.json
